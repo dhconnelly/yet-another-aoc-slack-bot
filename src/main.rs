@@ -1,6 +1,6 @@
 use reqwest::blocking::Client;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -39,10 +39,27 @@ struct Member {
     stars: i64,
 }
 
+impl Member {
+    fn name(&self) -> Cow<String> {
+        match &self.name {
+            Some(name) => Cow::Borrowed(name),
+            None => Cow::Owned(format!("<anonymous user {}>", self.id)),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct Leaderboard {
     members: HashMap<String, Member>,
     event: String,
+}
+
+impl Leaderboard {
+    fn sorted_members(self) -> Vec<Member> {
+        let mut members: Vec<Member> = self.members.into_values().collect();
+        members.sort_by_key(|m| -m.local_score);
+        members
+    }
 }
 
 fn fetch_leaderboard(opt: &Opt) -> Result<Leaderboard, impl std::error::Error> {
@@ -55,60 +72,16 @@ fn fetch_leaderboard(opt: &Opt) -> Result<Leaderboard, impl std::error::Error> {
     resp.json()
 }
 
-#[derive(Debug)]
-struct MemberScore {
-    id: u64,
-    name: Option<String>,
-    score: i64,
-    stars: i64,
-}
-
-impl From<Member> for MemberScore {
-    fn from(member: Member) -> Self {
-        MemberScore {
-            id: member.id,
-            name: member.name,
-            score: member.local_score,
-            stars: member.stars,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct EventScores {
-    event: String,
-    scores: Vec<MemberScore>,
-}
-
-impl EventScores {
-    fn sorted(mut self) -> Self {
-        self.scores.sort_by_key(|score| -score.score);
-        self
-    }
-}
-
-impl From<Leaderboard> for EventScores {
-    fn from(leaderboard: Leaderboard) -> Self {
-        let event = leaderboard.event;
-        let scores = leaderboard
-            .members
-            .into_values()
-            .map(MemberScore::from)
-            .collect();
-        Self { event, scores }
-    }
-}
-
-fn print_scores(scores: EventScores) {
-    println!("🎄 Advent of Code {} 🎄", scores.event);
+fn print_leaderboard(leaderboard: Leaderboard) {
+    println!("🎄 Advent of Code {} 🎄", leaderboard.event);
     println!("{:>5} {:<30} {:>7} {:>7}", "Pos", "User", "Score", "Stars");
-    for (place, member) in scores.scores.into_iter().enumerate() {
-        let name = member.name.unwrap_or_else(|| member.id.to_string());
+    let members = leaderboard.sorted_members();
+    for (place, member) in members.into_iter().enumerate() {
         println!(
             "{:>5} {:<30} {:>7} {:>7}",
             place + 1,
-            name,
-            member.score,
+            member.name(),
+            member.local_score,
             member.stars
         );
     }
@@ -117,6 +90,5 @@ fn print_scores(scores: EventScores) {
 fn main() {
     let opt = Opt::from_args();
     let leaderboard = fetch_leaderboard(&opt).unwrap();
-    let scores = EventScores::from(leaderboard).sorted();
-    print_scores(scores);
+    print_leaderboard(leaderboard);
 }
