@@ -1,5 +1,7 @@
+use anyhow::{anyhow, Error};
 use reqwest::blocking::Client;
 use serde::Deserialize;
+use std::time::Duration;
 use std::{borrow::Cow, collections::HashMap};
 use structopt::StructOpt;
 
@@ -7,20 +9,24 @@ use structopt::StructOpt;
 #[structopt(name = "yet-another-aoc-slack-bot", about = "usage")]
 struct Opt {
     /// Private leaderboard ID
-    #[structopt(long)]
+    #[structopt(long, env = "LEADERBOARD_ID")]
     leaderboard_id: String,
 
     /// API session ID
-    #[structopt(long)]
+    #[structopt(long, env = "SESSION_ID")]
     session_id: String,
 
     /// Slack webhook
-    #[structopt(long)]
+    #[structopt(long, env = "SLACK_WEBHOOK_ID")]
     slack_webhook: String,
 
     /// Verbose mode
     #[structopt(long)]
     verbose: bool,
+
+    /// Refresh period
+    #[structopt(long, default_value = "900")]
+    refresh_period_secs: u64,
 
     /// AoC leaderboard base URL
     #[structopt(
@@ -60,16 +66,20 @@ impl Leaderboard {
         members.sort_by_key(|m| -m.local_score);
         members
     }
+
+    fn last_update(&self) -> Option<u64> {
+        self.members.iter().map(|(_, m)| m.last_star_ts).max()
+    }
 }
 
-fn fetch_leaderboard(opt: &Opt) -> Result<Leaderboard, impl std::error::Error> {
+fn fetch_leaderboard(opt: &Opt) -> Result<Leaderboard, Error> {
     let client = Client::new();
     let url = format!("{}/{}.json", opt.aoc_base_url, opt.leaderboard_id);
     let resp = client
         .get(url)
         .header("Cookie", format!("session={}", opt.session_id))
         .send()?;
-    resp.json()
+    Ok(resp.json()?)
 }
 
 fn print_leaderboard(leaderboard: Leaderboard) {
@@ -87,8 +97,48 @@ fn print_leaderboard(leaderboard: Leaderboard) {
     }
 }
 
+#[derive(Default)]
+struct Reporter {
+    last_update: Option<u64>,
+}
+
+impl Reporter {
+    fn report_leaderboard(&mut self, leaderboard: Leaderboard) {
+        if let Some(new_update) = leaderboard.last_update() {
+            if new_update > self.last_update.unwrap_or(u64::MIN) {
+                print_leaderboard(leaderboard);
+            } else {
+                self.log("no new update, ignoring");
+            }
+            self.last_update = Some(new_update);
+        } else {
+            self.report_error(anyhow!("leaderboard missing update time!"));
+        }
+    }
+
+    fn log<S: AsRef<str>>(&self, msg: S) {
+        println!("LOG: {}", msg.as_ref());
+    }
+
+    fn report_error(&self, err: Error) {
+        eprintln!("ERROR: {}", err);
+    }
+
+    fn report(&mut self, result: Result<Leaderboard, Error>) {
+        match result {
+            Ok(leaderboard) => self.report_leaderboard(leaderboard),
+            Err(err) => self.report_error(err),
+        }
+    }
+}
+
 fn main() {
     let opt = Opt::from_args();
-    let leaderboard = fetch_leaderboard(&opt).unwrap();
-    print_leaderboard(leaderboard);
+    let mut reporter = Reporter::default();
+    let sleep = Duration::from_secs(opt.refresh_period_secs);
+    loop {
+        let leaderboard = fetch_leaderboard(&opt);
+        reporter.report(leaderboard);
+        std::thread::sleep(sleep);
+    }
 }
